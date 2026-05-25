@@ -1,0 +1,21 @@
+# Ignorar la carpeta del dataset
+dataset/
+
+# Ignorar imágenes y videos en la raíz (excepto los generados por el pipeline)
+*.png
+!pipeline_*.png
+*.jpg
+*.jpeg
+*.mp4
+*.avi
+!resultado_*.avi
+*.zip
+*.tar
+*.tar.gz
+*.rar
+
+# Pero incluir los archivos dentro de imagenes/
+!imagenes/*.mp4
+
+# Ignorar archivos temporales de Python
+__pycache__/
