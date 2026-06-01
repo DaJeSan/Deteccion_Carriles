@@ -15,8 +15,8 @@ DIAGRAMA_PATH     = "pipeline_mejora3_curvas_steps.png"
 # ================================================================
 # PARÁMETROS GLOBALES DE ESTABILIZACIÓN TEMPORAL
 # ================================================================
-HISTORY_N = 8
-OUTLIER_SIGMA = 2.0
+HISTORY_N = 4
+OUTLIER_SIGMA = 3.0
 
 # ================================================================
 # 1. CARGA DE VIDEO
@@ -74,17 +74,17 @@ def hsv_color_filter(image):
 # ================================================================
 # 6. REGIÓN DE INTERÉS (ampliada para curvas)
 # ================================================================
-def region_of_interest(edges, image_shape):
+def region_of_interest(image, image_shape):
     height, width = image_shape[0], image_shape[1]
     bottom_left  = (int(0.05 * width),  int(0.92 * height))
     bottom_right = (int(0.95 * width),  int(0.92 * height))
     top_left     = (int(0.30 * width),  int(0.60 * height))
     top_right    = (int(0.70 * width),  int(0.60 * height))
     vertices = np.array([[bottom_left, top_left, top_right, bottom_right]], dtype=np.int32)
-    mask = np.zeros_like(edges)
+    mask = np.zeros((height, width), dtype=np.uint8)
     cv2.fillPoly(mask, vertices, 255)
-    masked_edges = cv2.bitwise_and(edges, mask)
-    return masked_edges, vertices, mask
+    masked_image = cv2.bitwise_and(image, image, mask=mask)
+    return masked_image, vertices, mask
 
 # ================================================================
 # 7. HOUGH PROBABILÍSTICA CALIBRADA
@@ -109,12 +109,15 @@ def hough_lines_probabilistic(
 # ================================================================
 # 8. CLASIFICAR SEGMENTOS EN CARRIL IZQUIERDO / DERECHO
 # ================================================================
-def classify_segments(lines, image_width):
+def classify_segments(lines, image_width, image_height):
     left_lines  = []
     right_lines = []
 
     if lines is None:
         return left_lines, right_lines
+
+    center_x = image_width / 2
+    y_ref    = int(0.80 * image_height) 
 
     for line in lines:
         x1, y1, x2, y2 = line[0]
@@ -123,10 +126,12 @@ def classify_segments(lines, image_width):
         slope     = (y2 - y1) / (x2 - x1)
         intercept = y1 - slope * x1
 
-        if abs(slope) < 0.3 or abs(slope) > 5.0:
+        if abs(slope) < 0.2 or abs(slope) > 5.0:
             continue
 
-        if slope < 0:
+        x_at_ref = (y_ref - intercept) / slope
+
+        if x_at_ref < center_x:
             left_lines.append((slope, intercept))
         else:
             right_lines.append((slope, intercept))
@@ -142,8 +147,8 @@ class LaneKalmanFilter:
         self.P = np.eye(2, dtype=np.float64) * 1000.0
         self.F = np.eye(2, dtype=np.float64)
         self.H = np.eye(2, dtype=np.float64)
-        self.Q = np.diag([1e-4, 10.0])
-        self.R = np.diag([1e-2, 100.0])
+        self.Q = np.diag([5e-3, 50.0]) 
+        self.R = np.diag([5e-3, 30.0])
         self.initialized = False
 
     def predict(self):
@@ -274,7 +279,9 @@ def draw_stabilized_lanes(image, left_state, right_state, image_shape,
 # 14. PIPELINE COMPLETO
 # ================================================================
 def process_frame(frame, left_stabilizer, right_stabilizer):
-    filtered_image, mask_combined, mask_white, mask_yellow = hsv_color_filter(frame)
+    roi_frame, roi_vertices, roi_mask = region_of_interest(frame, frame.shape)
+
+    filtered_image, mask_combined, mask_white, mask_yellow = hsv_color_filter(roi_frame)
 
     gray    = to_grayscale(filtered_image)
 
@@ -282,10 +289,8 @@ def process_frame(frame, left_stabilizer, right_stabilizer):
 
     edges   = canny_edge_detection(blurred, low_threshold=50, high_threshold=150)
 
-    masked_edges, roi_vertices, roi_mask = region_of_interest(edges, frame.shape)
-
     lines = hough_lines_probabilistic(
-        masked_edges,
+        edges,
         rho=1,
         theta=np.pi / 180,
         threshold=30,
@@ -293,7 +298,9 @@ def process_frame(frame, left_stabilizer, right_stabilizer):
         max_line_gap=80
     )
 
-    left_params, right_params = classify_segments(lines, frame.shape[1])
+    left_params, right_params = classify_segments(
+    lines, frame.shape[1], frame.shape[0]   
+)
 
     left_raw  = []
     right_raw = []
@@ -320,6 +327,7 @@ def process_frame(frame, left_stabilizer, right_stabilizer):
     cv2.polylines(result, roi_vertices, isClosed=True, color=(0, 0, 255), thickness=2)
 
     debug_images = {
+        "roi_frame":      roi_frame,
         "filtered_bgr":   filtered_image,
         "mask_white":     mask_white,
         "mask_yellow":    mask_yellow,
@@ -327,7 +335,7 @@ def process_frame(frame, left_stabilizer, right_stabilizer):
         "grayscale":      gray,
         "gaussian":       blurred,
         "canny":          edges,
-        "filtered_edges": masked_edges,
+        "filtered_edges": edges,
         "roi_mask":       roi_mask,
         "roi_vertices":   roi_vertices,
     }
@@ -349,25 +357,25 @@ def show_pipeline_diagram(frame, debug_images):
 
     titles = [
         "1. Original (BGR)",
-        "2. Máscara blanco (V≥120, S≤35)",
-        "3. Máscara amarillo (H15-35, S≥35, V≥80)",
-        "4. Imagen filtrada HSV + anti-veg + morph",
-        "5. Grises → Gaussiano",
-        "6. Canny 50/150",
-        "7. Bordes en ROI ampliada",
+        "2. ROI ampliada sobre original",
+        "3. Máscara blanco (V≥120, S≤35)",
+        "4. Máscara amarillo (H15-35, S≥35, V≥80)",
+        "5. Imagen filtrada HSV + anti-veg + morph",
+        "6. Grises → Gaussiano",
+        "7. Canny 50/150",
         "8. Resultado Kalman estabilizado",
     ]
     images = [
         frame_rgb,
+        cv2.cvtColor(debug_images["roi_frame"], cv2.COLOR_BGR2RGB),
         debug_images["mask_white"],
         debug_images["mask_yellow"],
         filtered_rgb,
         debug_images["gaussian"],
         debug_images["canny"],
-        debug_images["filtered_edges"],
         result_rgb,
     ]
-    cmaps = [None, 'gray', 'gray', None, 'gray', 'gray', 'gray', None]
+    cmaps = [None, None, 'gray', 'gray', None, 'gray', 'gray', None]
 
     for ax, img, title, cmap in zip(axes.flat, images, titles, cmaps):
         ax.imshow(img, cmap=cmap)
