@@ -60,17 +60,17 @@ def hsv_color_filter(image):
 # ================================================================
 # 6. REGIÓN DE INTERÉS
 # ================================================================
-def region_of_interest(edges, image_shape):
+def region_of_interest(image, image_shape):
     height, width = image_shape[0], image_shape[1]
     bottom_left  = (int(0.15 * width),  int(0.85 * height))
     bottom_right = (int(0.85 * width),  int(0.85 * height))
     top_left     = (int(0.425 * width), int(0.55 * height))
     top_right    = (int(0.575 * width), int(0.55 * height))
     vertices = np.array([[bottom_left, top_left, top_right, bottom_right]], dtype=np.int32)
-    mask = np.zeros_like(edges)
+    mask = np.zeros((height, width), dtype=np.uint8)
     cv2.fillPoly(mask, vertices, 255)
-    masked_edges = cv2.bitwise_and(edges, mask)
-    return masked_edges, vertices, mask
+    masked_image = cv2.bitwise_and(image, image, mask=mask)
+    return masked_image, vertices, mask
 
 # ================================================================
 # 7. HOUGH PROBABILÍSTICA CALIBRADA  ← MEJORA 2
@@ -119,27 +119,25 @@ def draw_lines_probabilistic(image, lines, roi_mask, color=(0, 255, 0), thicknes
 # 9. PIPELINE COMPLETO — MEJORA 2
 # ================================================================
 def process_frame(frame):
-    
-    # Paso 1: Filtro HSV — genera imagen donde solo hay píxeles B/A
-    filtered_image, mask_combined, mask_white, mask_yellow = hsv_color_filter(frame)
 
-    # Paso 2: Grises de la imagen YA filtrada (sin ruido de color)
+    # Paso 1: ROI sobre original
+    roi_frame, roi_vertices, roi_mask = region_of_interest(frame, frame.shape)
+
+    # Paso 2: Filtro HSV sobre ROI
+    filtered_image, mask_combined, mask_white, mask_yellow = hsv_color_filter(roi_frame)
+
+    # Paso 3: Grises de la imagen YA filtrada
     gray    = to_grayscale(filtered_image)
 
-    # Paso 3: Suavizado
+    # Paso 4: Suavizado
     blurred = gaussian_blur(gray, kernel_size=(9, 9))
 
-    # Paso 4: Canny — solo detecta bordes de píxeles blancos/amarillos
+    # Paso 5: Canny
     edges   = canny_edge_detection(blurred, low_threshold=100, high_threshold=300)
 
-    # Paso 5: ROI — recorta al trapecio de interés
-    masked_edges, roi_vertices, roi_mask = region_of_interest(edges, frame.shape)
-
-    filtered_edges = masked_edges
-
-    # Paso 6: HoughLinesP  ← MEJORA 2
+    # Paso 6: HoughLinesP
     lines = hough_lines_probabilistic(
-        masked_edges,          
+        edges,
         rho=1,
         theta=np.pi / 180,
         threshold=30,
@@ -147,11 +145,12 @@ def process_frame(frame):
         max_line_gap=80
     )
 
-    # Paso 8: Dibujo
+    # Paso 7: Dibujo
     result = draw_lines_probabilistic(frame, lines, roi_mask, color=(0, 255, 0), thickness=4)
     cv2.polylines(result, roi_vertices, isClosed=True, color=(0, 0, 255), thickness=2)
 
     debug_images = {
+        "roi_frame":      roi_frame,
         "filtered_bgr":   filtered_image,
         "mask_white":     mask_white,
         "mask_yellow":    mask_yellow,
@@ -159,7 +158,7 @@ def process_frame(frame):
         "grayscale":      gray,
         "gaussian":       blurred,
         "canny":          edges,
-        "filtered_edges": filtered_edges,
+        "filtered_edges": edges,
         "roi_mask":       roi_mask,
         "roi_vertices":   roi_vertices,
     }
@@ -181,25 +180,25 @@ def show_pipeline_diagram(frame, debug_images):
 
     titles = [
         "1. Original (BGR)",
-        "2. Máscara blanco",
-        "3. Máscara amarillo",
-        "4. Imagen filtrada HSV",
-        "5. Grises → Gaussiano",
-        "6. Canny 50/150",
-        "7. Bordes en ROI (Canny+ROI)",
+        "2. ROI sobre original",
+        "3. Máscara blanco",
+        "4. Máscara amarillo",
+        "5. Imagen filtrada HSV",
+        "6. Grises → Gaussiano",
+        "7. Canny 100/300",
         "8. Resultado HoughLinesP",
     ]
     images = [
         frame_rgb,
+        cv2.cvtColor(debug_images["roi_frame"], cv2.COLOR_BGR2RGB),
         debug_images["mask_white"],
         debug_images["mask_yellow"],
         filtered_rgb,
         debug_images["gaussian"],
         debug_images["canny"],
-        debug_images["filtered_edges"],
         result_rgb,
     ]
-    cmaps = [None, 'gray', 'gray', None, 'gray', 'gray', 'gray', None]
+    cmaps = [None, None, 'gray', 'gray', None, 'gray', 'gray', None]
 
     for ax, img, title, cmap in zip(axes.flat, images, titles, cmaps):
         ax.imshow(img, cmap=cmap)
