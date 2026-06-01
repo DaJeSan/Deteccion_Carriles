@@ -67,7 +67,7 @@ def hsv_color_filter(image):
 # ================================================================
 # 6. ROI — trapecio ampliado para curvas
 # ================================================================
-def region_of_interest(edges, image_shape):
+def region_of_interest(image, image_shape):
     height, width = image_shape[0], image_shape[1]
     bottom_left  = (int(0.05 * width), int(0.92 * height))
     bottom_right = (int(0.95 * width), int(0.92 * height))
@@ -75,10 +75,10 @@ def region_of_interest(edges, image_shape):
     top_right    = (int(0.70 * width), int(0.60 * height))
     vertices = np.array(
         [[bottom_left, top_left, top_right, bottom_right]], dtype=np.int32)
-    mask = np.zeros_like(edges)
+    mask = np.zeros((height, width), dtype=np.uint8)
     cv2.fillPoly(mask, vertices, 255)
-    masked_edges = cv2.bitwise_and(edges, mask)
-    return masked_edges, vertices, mask
+    masked_image = cv2.bitwise_and(image, image, mask=mask)
+    return masked_image, vertices, mask
 
 # ================================================================
 # 7. HOUGH ESTÁNDAR — threshold recalibrado
@@ -155,7 +155,9 @@ def draw_lines_curvas(image, lines, roi_mask, image_shape):
 # 9. PIPELINE COMPLETO
 # ================================================================
 def process_frame(frame):
-    filtered_image, mask_combined, mask_white, mask_yellow = hsv_color_filter(frame)
+    roi_frame, roi_vertices, roi_mask = region_of_interest(frame, frame.shape)
+
+    filtered_image, mask_combined, mask_white, mask_yellow = hsv_color_filter(roi_frame)
 
     gray    = to_grayscale(filtered_image)
 
@@ -163,14 +165,13 @@ def process_frame(frame):
 
     edges   = canny_edge_detection(blurred)
 
-    masked_edges, roi_vertices, roi_mask = region_of_interest(edges, frame.shape)
-
-    lines = hough_lines(masked_edges, rho=1, theta=np.pi / 180, threshold=80)
+    lines = hough_lines(edges, rho=1, theta=np.pi / 180, threshold=80)
 
     result = draw_lines_curvas(frame, lines, roi_mask, frame.shape)
     cv2.polylines(result, roi_vertices, isClosed=True, color=(0, 0, 255), thickness=2)
 
     debug_images = {
+        "roi_frame":      roi_frame,
         "filtered_bgr":   filtered_image,
         "mask_white":     mask_white,
         "mask_yellow":    mask_yellow,
@@ -178,7 +179,7 @@ def process_frame(frame):
         "grayscale":      gray,
         "gaussian":       blurred,
         "canny":          edges,
-        "filtered_edges": masked_edges,
+        "filtered_edges": edges,
         "roi_mask":       roi_mask,
         "roi_vertices":   roi_vertices,
     }
@@ -200,25 +201,25 @@ def show_pipeline_diagram(frame, debug_images):
 
     titles = [
         "1. Original (BGR)",
-        "2. Máscara blanco (V≥120, S≤35)",
-        "3. Máscara amarillo (H15-35, S≥35, V≥80)",
-        "4. Imagen filtrada HSV + anti-veg",
-        "5. Grises → Gaussiano 9×9",
-        "6. Canny 30/90",
-        "7. Bordes en ROI ampliada",
+        "2. ROI ampliada sobre original",
+        "3. Máscara blanco (V≥120, S≤35)",
+        "4. Máscara amarillo (H15-35, S≥35, V≥80)",
+        "5. Imagen filtrada HSV + anti-veg",
+        "6. Grises → Gaussiano 9×9",
+        "7. Canny 30/90",
         "8. Resultado Hough (1 línea/lado)",
     ]
     images = [
         frame_rgb,
+        cv2.cvtColor(debug_images["roi_frame"], cv2.COLOR_BGR2RGB),
         debug_images["mask_white"],
         debug_images["mask_yellow"],
         filtered_rgb,
         debug_images["gaussian"],
         debug_images["canny"],
-        debug_images["filtered_edges"],
         result_rgb,
     ]
-    cmaps = [None, 'gray', 'gray', None, 'gray', 'gray', 'gray', None]
+    cmaps = [None, None, 'gray', 'gray', None, 'gray', 'gray', None]
 
     for ax, img, title, cmap in zip(axes.flat, images, titles, cmaps):
         ax.imshow(img, cmap=cmap)
