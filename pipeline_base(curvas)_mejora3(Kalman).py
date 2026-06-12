@@ -207,6 +207,10 @@ class LaneStabilizer:
         self.history = LaneHistory(maxlen=maxlen)
 
     def _weighted_average(self, line_params, lines_raw):
+        if not lines_raw:
+            return np.array([sum(p[0] for p in line_params) / len(line_params),
+                             sum(p[1] for p in line_params) / len(line_params)])
+
         weights = []
         for x1, y1, x2, y2 in lines_raw:
             length = np.hypot(x2 - x1, y2 - y1)
